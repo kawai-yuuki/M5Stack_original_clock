@@ -80,7 +80,7 @@ void loop() {                // メインループ
     canvas.drawString(buf, canvas.width() / 2, timeY);  // 文字列を中央の少し上に描画
 
     int batteryLevel = M5.Power.getBatteryLevel();  // バッテリー残量を取得
-    int batteryWidth = canvas.width() * 3 / 4;      // バッテリー枠幅
+    int batteryWidth = canvas.width() * 2 / 4;      // バッテリー枠幅
     int batteryHeight = 50;                         // バッテリー枠高さ
     int batteryX = (canvas.width() - batteryWidth) / 2;  // 枠X座標
     int batteryY = canvas.height() * 3 / 4 - batteryHeight / 2;  // 枠Y座標
