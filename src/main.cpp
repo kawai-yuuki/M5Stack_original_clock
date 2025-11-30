@@ -8,17 +8,27 @@
 
 namespace {
 
+// 基本動作を制御する定数群
 constexpr const char* kNtpServer = "ntp.nict.jp";
 constexpr uint32_t kWifiConnectTimeoutMs = 15000;
 constexpr uint32_t kNtpTimeoutMs = 10000;
-constexpr uint32_t kResyncIntervalMs = 60 * 60 * 1000;  // 1 hour
+constexpr uint32_t kResyncIntervalMs = 60 * 60 * 1000 * 3;  // 3 hours
+constexpr uint8_t kDisplayBrightness = 50;
 
 uint32_t gLastSyncMillis = 0;
 time_t gLastSyncedEpoch = 0;
 bool gRtcValid = false;
 M5Canvas gCanvas(&M5.Display);
 bool gCanvasReady = false;
+bool gDisplayOn = true;
+tm gLastDrawnTime = {};
+bool gHasLastDrawnTime = false;
 
+void pushFrame(const tm& info);
+void setDisplayOn(bool on);
+void handleButtonInput();
+
+// ログ出力をまとめておくとシリアル監視がしやすい
 void logTime(const char* label, const tm& info) {
   char buffer[32];
   strftime(buffer, sizeof(buffer), "%Y/%m/%d %H:%M:%S", &info);
@@ -36,6 +46,7 @@ void showStatus(const char* message, uint16_t textSize = 2) {
 }
 
 bool initCanvas() {
+  // フレームバッファを確保できればプッシュ描画でちらつきを抑えられる
   gCanvas.setColorDepth(16);
   if (gCanvas.createSprite(M5.Display.width(), M5.Display.height()) == nullptr) {
     Serial.println("[Canvas] Failed to allocate sprite");
@@ -106,6 +117,7 @@ void updateRtcFrom(const tm& info) {
 }
 
 void updateCache(const tm& info) {
+  // millis() と組み合わせれば Wi-Fi 切断後もある程度連続的に進められる
   tm copy = info;
   time_t epoch = mktime(&copy);
   if (epoch <= 0) {
@@ -126,6 +138,7 @@ bool getCachedTime(tm* out) {
 
 template <typename Target>
 void drawBatteryLevel(Target& target) {
+  // M5.Power API はデバイス依存なので画面描画とは分離
   const int level = M5.Power.getBatteryLevel();
   const bool charging = M5.Power.isCharging();
   char battBuf[24];
@@ -140,6 +153,7 @@ void drawBatteryLevel(Target& target) {
   target.drawString(battBuf, target.width() - 10, 20);
 }
 
+// 任意のターゲット(LCD/Sprite)へ共通レイアウトで描画
 template <typename Target>
 void renderTimeTo(Target& target, const tm& info) {
   target.fillScreen(BLACK);
@@ -159,12 +173,44 @@ void renderTimeTo(Target& target, const tm& info) {
   drawBatteryLevel(target);
 }
 
-void drawTime(const tm& info) {
+void pushFrame(const tm& info) {
   if (gCanvasReady) {
     renderTimeTo(gCanvas, info);
     gCanvas.pushSprite(0, 0);
   } else {
     renderTimeTo(M5.Display, info);
+  }
+}
+
+void drawTime(const tm& info) {
+  gLastDrawnTime = info;
+  gHasLastDrawnTime = true;
+  if (!gDisplayOn) {
+    return;
+  }
+  pushFrame(info);
+}
+
+void setDisplayOn(bool on) {
+  if (gDisplayOn == on) {
+    return;
+  }
+  gDisplayOn = on;
+  if (on) {
+    M5.Display.wakeup();
+    M5.Display.setBrightness(kDisplayBrightness);
+    if (gHasLastDrawnTime) {
+      pushFrame(gLastDrawnTime);
+    }
+  } else {
+    M5.Display.sleep();
+  }
+}
+
+void handleButtonInput() {
+  M5.update();
+  if (M5.BtnA.wasReleased()) {
+    setDisplayOn(!gDisplayOn);
   }
 }
 
@@ -176,7 +222,7 @@ void setup() {
   M5.begin(cfg);
   Serial.println("[BOOT] Device start");
   M5.Display.setRotation(1);
-  M5.Display.setBrightness(160);
+  M5.Display.setBrightness(kDisplayBrightness);
   initCanvas();
 
   tm rtcTime;
@@ -212,12 +258,14 @@ void setup() {
 }
 
 void loop() {
+  handleButtonInput();
   static uint32_t lastDraw = 0;
   const uint32_t now = millis();
   const bool wifiConnected = (WiFi.status() == WL_CONNECTED);
   if (now - lastDraw >= 1000) {
     lastDraw = now;
     tm timeinfo;
+    // Wi-Fi:SNTP -> キャッシュ -> RTC の優先順位で描画ソースを選択
     if (wifiConnected && getLocalTime(&timeinfo)) {
       updateRtcFrom(timeinfo);
       updateCache(timeinfo);
